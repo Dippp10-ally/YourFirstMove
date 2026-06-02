@@ -2,7 +2,7 @@ import request from 'supertest';
 import app from '../app';
 
 // Mock the database so tests don't need a real MySQL connection
-jest.mock('../database/connection', () => ({
+jest.mock('../config/database', () => ({
   default: {
     raw: jest.fn().mockResolvedValue([{ '1': 1 }]),
   },
