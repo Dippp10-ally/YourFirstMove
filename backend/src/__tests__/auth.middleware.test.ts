@@ -2,11 +2,14 @@ import { Request, Response, NextFunction } from 'express';
 import { authenticate } from '../middleware/auth';
 
 // Mock AuthService so we don't need a real database
-jest.mock('../services/AuthService', () => ({
-  default: {
-    validateToken: jest.fn(),
-  },
-}));
+jest.mock('../services/AuthService', () => {
+  return {
+    __esModule: true,
+    default: {
+      validateToken: jest.fn(),
+    },
+  };
+});
 
 import authService from '../services/AuthService';
 

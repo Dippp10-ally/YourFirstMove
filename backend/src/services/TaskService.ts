@@ -1,6 +1,8 @@
+import { transaction } from 'objection';
 import Task from '../models/Task';
 import logger from '../config/logger';
 import { AnalyticsService } from './AnalyticsService';
+import { TaskNotFoundError, ForbiddenTaskAccessError } from '../errors/AppError';
 
 export interface CreateTaskDTO {
   title: string;
@@ -37,6 +39,17 @@ export interface Pagination {
   pageSize: number;
 }
 
+export async function validateTaskOwnership(userId: number, taskId: number): Promise<Task> {
+  const task = await Task.query().findById(taskId);
+  if (!task) {
+    throw new TaskNotFoundError(`Task with ID ${taskId} not found`);
+  }
+  if (task.user_id !== userId) {
+    throw new ForbiddenTaskAccessError(`Access to task with ID ${taskId} is forbidden`);
+  }
+  return task;
+}
+
 export class TaskService {
   private analyticsService: AnalyticsService;
 
@@ -62,7 +75,7 @@ export class TaskService {
         is_critical: taskData.isCritical || false,
         is_completed: false,
         display_order: 0,
-      });
+      } as any);
 
       logger.info(`Task created: ${task.id} for user ${userId}`);
       return task;
@@ -74,16 +87,8 @@ export class TaskService {
 
   async updateTask(taskId: number, userId: number, updates: UpdateTaskDTO): Promise<Task> {
     try {
-      const task = await Task.query().findById(taskId);
+      const task = await validateTaskOwnership(userId, taskId);
       
-      if (!task) {
-        throw new Error('Task not found');
-      }
-
-      if (task.user_id !== userId) {
-        throw new Error('Unauthorized');
-      }
-
       // Build update object, filtering out empty strings and undefined values
       const updateData: any = {};
       
@@ -117,16 +122,7 @@ export class TaskService {
 
   async deleteTask(taskId: number, userId: number): Promise<void> {
     try {
-      const task = await Task.query().findById(taskId);
-      
-      if (!task) {
-        throw new Error('Task not found');
-      }
-
-      if (task.user_id !== userId) {
-        throw new Error('Unauthorized');
-      }
-
+      await validateTaskOwnership(userId, taskId);
       await Task.query().deleteById(taskId);
       logger.info(`Task deleted: ${taskId}`);
     } catch (error) {
@@ -136,22 +132,7 @@ export class TaskService {
   }
 
   async getTask(taskId: number, userId: number): Promise<Task> {
-    try {
-      const task = await Task.query().findById(taskId);
-      
-      if (!task) {
-        throw new Error('Task not found');
-      }
-
-      if (task.user_id !== userId) {
-        throw new Error('Unauthorized');
-      }
-
-      return task;
-    } catch (error) {
-      logger.error('Task retrieval error:', error);
-      throw error;
-    }
+    return validateTaskOwnership(userId, taskId);
   }
 
   async listTasks(
@@ -246,15 +227,32 @@ export class TaskService {
 
   async reorderTasks(userId: number, taskIds: number[]): Promise<void> {
     try {
-      // Update display_order for each task
-      const promises = taskIds.map((taskId, index) =>
-        Task.query()
-          .findById(taskId)
-          .where('user_id', userId)
-          .patch({ display_order: index })
-      );
+      await transaction(Task.knex(), async (trx) => {
+        // Fetch all target tasks inside the transaction to check ownership & existence
+        const allTasks = await Task.query(trx).whereIn('id', taskIds);
+        const allTaskIds = allTasks.map(t => t.id);
 
-      await Promise.all(promises);
+        for (const id of taskIds) {
+          if (!allTaskIds.includes(id)) {
+            throw new TaskNotFoundError(`Task with ID ${id} not found`);
+          }
+        }
+
+        for (const task of allTasks) {
+          if (task.user_id !== userId) {
+            throw new ForbiddenTaskAccessError(`Access to task with ID ${task.id} is forbidden`);
+          }
+        }
+
+        // Update display_order for each task
+        const promises = taskIds.map((taskId, index) =>
+          Task.query(trx)
+            .findById(taskId)
+            .patch({ display_order: index })
+        );
+
+        await Promise.all(promises);
+      });
       logger.info(`Tasks reordered for user ${userId}`);
     } catch (error) {
       logger.error('Task reordering error:', error);
@@ -312,44 +310,46 @@ export class TaskService {
       
       logger.info(`Normalized dates - source: ${normalizedSourceDate}, target: ${normalizedTargetDate}`);
       
-      // Get all tasks from source date
-      const sourceTasks = await Task.query()
-        .where('user_id', userId)
-        .whereRaw('DATE(due_date) = ?', [normalizedSourceDate])
-        .orderBy('due_time', 'asc');
+      return await transaction(Task.knex(), async (trx) => {
+        // Get all tasks from source date inside transaction
+        const sourceTasks = await Task.query(trx)
+          .where('user_id', userId)
+          .whereRaw('DATE(due_date) = ?', [normalizedSourceDate])
+          .orderBy('due_time', 'asc');
 
-      logger.info(`Found ${sourceTasks.length} tasks on source date`);
+        logger.info(`Found ${sourceTasks.length} tasks on source date`);
 
-      if (sourceTasks.length === 0) {
-        logger.info(`No tasks found for source date: ${normalizedSourceDate}`);
-        return [];
-      }
+        if (sourceTasks.length === 0) {
+          logger.info(`No tasks found for source date: ${normalizedSourceDate}`);
+          return [];
+        }
 
-      // Create duplicates for target date
-      const duplicatedTasks: Task[] = [];
-      
-      for (const sourceTask of sourceTasks) {
-        logger.info(`Duplicating task: ${sourceTask.title}`);
+        // Create duplicates for target date
+        const duplicatedTasks: Task[] = [];
         
-        const newTask = await Task.query().insert({
-          user_id: userId,
-          title: sourceTask.title,
-          description: sourceTask.description || null,
-          due_date: normalizedTargetDate,
-          due_time: sourceTask.due_time || null,
-          end_time: sourceTask.end_time || null,
-          priority: sourceTask.priority,
-          is_critical: Boolean(sourceTask.is_critical),
-          is_completed: false,
-          display_order: sourceTask.display_order || 0,
-        });
-        
-        logger.info(`Created duplicate task with ID: ${newTask.id}`);
-        duplicatedTasks.push(newTask);
-      }
+        for (const sourceTask of sourceTasks) {
+          logger.info(`Duplicating task: ${sourceTask.title}`);
+          
+          const newTask = await Task.query(trx).insert({
+            user_id: userId,
+            title: sourceTask.title,
+            description: sourceTask.description || null,
+            due_date: normalizedTargetDate,
+            due_time: sourceTask.due_time || null,
+            end_time: sourceTask.end_time || null,
+            priority: sourceTask.priority,
+            is_critical: Boolean(sourceTask.is_critical),
+            is_completed: false,
+            display_order: sourceTask.display_order || 0,
+          } as any);
+          
+          logger.info(`Created duplicate task with ID: ${newTask.id}`);
+          duplicatedTasks.push(newTask);
+        }
 
-      logger.info(`Successfully duplicated ${duplicatedTasks.length} tasks from ${normalizedSourceDate} to ${normalizedTargetDate}`);
-      return duplicatedTasks;
+        logger.info(`Successfully duplicated ${duplicatedTasks.length} tasks from ${normalizedSourceDate} to ${normalizedTargetDate}`);
+        return duplicatedTasks;
+      });
     } catch (error) {
       logger.error('Duplicate day schedule error:', error);
       throw error;

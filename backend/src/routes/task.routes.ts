@@ -1,7 +1,15 @@
 import { Router } from 'express';
 import taskService from '../services/TaskService';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { validate, createTaskSchema, updateTaskSchema } from '../middleware/validation';
+import {
+  validate,
+  validateQuery,
+  createTaskSchema,
+  updateTaskSchema,
+  listTasksQuerySchema,
+  reorderTasksSchema,
+  duplicateDaySchema,
+} from '../middleware/validation';
 
 const router = Router();
 
@@ -9,19 +17,19 @@ const router = Router();
 router.use(authenticate);
 
 // List tasks
-router.get('/', async (req: AuthRequest, res, next) => {
+router.get('/', validateQuery(listTasksQuerySchema), async (req: AuthRequest, res, next) => {
   try {
     const filters = {
       priority: req.query.priority as string,
-      isCompleted: req.query.isCompleted === 'true',
+      isCompleted: req.query.isCompleted as boolean | undefined,
       dateFrom: req.query.dateFrom as string,
       dateTo: req.query.dateTo as string,
       search: req.query.search as string,
     };
 
     const pagination = {
-      page: parseInt(req.query.page as string) || 1,
-      pageSize: parseInt(req.query.pageSize as string) || 50,
+      page: (req.query.page as any) || 1,
+      pageSize: (req.query.pageSize as any) || 50,
     };
 
     const result = await taskService.listTasks(req.userId!, filters, pagination);
@@ -30,8 +38,10 @@ router.get('/', async (req: AuthRequest, res, next) => {
       success: true,
       data: result,
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -44,8 +54,10 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res, next)
       success: true,
       data: { task },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -58,8 +70,10 @@ router.get('/:id', async (req: AuthRequest, res, next) => {
       success: true,
       data: { task },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -72,8 +86,10 @@ router.put('/:id', validate(updateTaskSchema), async (req: AuthRequest, res, nex
       success: true,
       data: { task },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -83,8 +99,10 @@ router.delete('/:id', async (req: AuthRequest, res, next) => {
     await taskService.deleteTask(parseInt(req.params.id), req.userId!);
 
     res.status(204).send();
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -97,8 +115,10 @@ router.patch('/:id/complete', async (req: AuthRequest, res, next) => {
       success: true,
       data: { task },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -111,13 +131,15 @@ router.patch('/:id/uncomplete', async (req: AuthRequest, res, next) => {
       success: true,
       data: { task },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
 // Reorder tasks
-router.patch('/reorder', async (req: AuthRequest, res, next) => {
+router.patch('/reorder', validate(reorderTasksSchema), async (req: AuthRequest, res, next) => {
   try {
     await taskService.reorderTasks(req.userId!, req.body.taskIds);
 
@@ -125,8 +147,10 @@ router.patch('/reorder', async (req: AuthRequest, res, next) => {
       success: true,
       message: 'Tasks reordered successfully',
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -139,8 +163,10 @@ router.get('/daily/:date', async (req: AuthRequest, res, next) => {
       success: true,
       data: { tasks },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
@@ -153,22 +179,17 @@ router.get('/monthly/:month', async (req: AuthRequest, res, next) => {
       success: true,
       data: { tasks },
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
 // Duplicate day's schedule to another date
-router.post('/duplicate-day', async (req: AuthRequest, res, next) => {
+router.post('/duplicate-day', validate(duplicateDaySchema), async (req: AuthRequest, res, next) => {
   try {
     const { sourceDate, targetDate } = req.body;
-    
-    if (!sourceDate || !targetDate) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'sourceDate and targetDate are required' }
-      });
-    }
     
     const duplicatedTasks = await taskService.duplicateDaySchedule(
       req.userId!,
@@ -181,8 +202,10 @@ router.post('/duplicate-day', async (req: AuthRequest, res, next) => {
       data: { tasks: duplicatedTasks, count: duplicatedTasks.length },
       message: `Successfully duplicated ${duplicatedTasks.length} tasks`
     });
+    return;
   } catch (error) {
     next(error);
+    return;
   }
 });
 
